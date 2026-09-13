@@ -22,7 +22,7 @@ const (
 )
 
 // скачивает аудио дорожку в формате m4a из видео на ютуб по ссылке
-func YtdlpDownload(outputTemplate, url string, quality string) ([]string, error) {
+func YtdlpDownload(outputTemplate, url, quality, downloadSections string) ([]string, error) {
 
 	// создаем пустой лог
 	downloadLog := []string{}
@@ -45,7 +45,6 @@ func YtdlpDownload(outputTemplate, url string, quality string) ([]string, error)
 
 		// бонусом строчка "--postprocessor-args", "ExtractAudio:-af volume=-1.0dB"
 		// дополнительно спасает от того самого true peak (если верить gimini).
-		// это дает заметный прирост к деталям и четкости звука
 
 		cmd = exec.Command(
 			"yt-dlp",
@@ -55,9 +54,10 @@ func YtdlpDownload(outputTemplate, url string, quality string) ([]string, error)
 			"-x",
 			"--audio-format", "m4a",
 			"--audio-quality", "0",
+			"--download-sections", downloadSections,
 			"--postprocessor-args", "ExtractAudio:-af volume=-1.0dB",
 			"--write-thumbnail",           // Скачать обложку в отдельный файл
-			"--embed-thumbnail",           // Вшить внутрь m4a (для офлайн-плееров)
+			"--embed-thumbnail",           // Вшить внутрь m4a
 			"--convert-thumbnails", "jpg", // Формат JPG для совместимости
 			"-o", outputTemplate,
 			url,
@@ -74,8 +74,9 @@ func YtdlpDownload(outputTemplate, url string, quality string) ([]string, error)
 			"-x",
 			"--audio-format", "m4a",
 			"--audio-quality", "192K",
+			"--download-sections", downloadSections,
 			"--write-thumbnail",           // Скачать обложку в отдельный файл
-			"--embed-thumbnail",           // Вшить внутрь m4a (для офлайн-плееров)
+			"--embed-thumbnail",           // Вшить внутрь m4a
 			"--convert-thumbnails", "jpg", // Формат JPG для совместимости
 			"-o", outputTemplate,
 			url,

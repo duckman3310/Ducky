@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -29,59 +30,52 @@ func YtdlpDownload(outputTemplate, url, quality, downloadSections string) ([]str
 
 	var cmd *exec.Cmd
 
-	// создаем комманду для скачивания
-	if quality == "max" {
+	// аргументы вызова
+	args := []string{
+		"--newline",
+		"--js-runtimes", "node",
+		"-f", "ba",
+		"-x",
+		"--audio-format", "m4a",
+		"-o", outputTemplate,
+		url,
 
-		// (скачивает в максимальном качестве)
+		// обложка
+		"--write-thumbnail",           // Скачать обложку в отдельный файл (я уже и забыл зачем)
+		"--embed-thumbnail",           // Вшить внутрь m4a
+		"--convert-thumbnails", "jpg", // Формат JPG для совместимости
 
-		// при обычной загрузке во время конвертации
-		// какого нибуть .opus (который тг воспринивает как голосовые) в .m4a
-		// ffmpeg, изза ограничений в размере часть звука срезается (так называемый true peak),
-		// и если вы очень ушастый высокие частоты начинают свистеть/песочить.
-
-		// решается это бустом битрейта почти в два раза (вместо лока на 192кб),
-		// изза чего конвертация проесходит либо без, либо почти без потерь
-		// но и вес файла увеличивается тоже два раза
-
-		// бонусом строчка "--postprocessor-args", "ExtractAudio:-af volume=-1.0dB"
-		// дополнительно спасает от того самого true peak (если верить gimini).
-
-		cmd = exec.Command(
-			"yt-dlp",
-			"--newline",
-			"--js-runtimes", "node",
-			"-f", "ba",
-			"-x",
-			"--audio-format", "m4a",
-			"--audio-quality", "0",
-			"--download-sections", downloadSections,
-			"--postprocessor-args", "ExtractAudio:-af volume=-1.0dB",
-			"--write-thumbnail",           // Скачать обложку в отдельный файл
-			"--embed-thumbnail",           // Вшить внутрь m4a
-			"--convert-thumbnails", "jpg", // Формат JPG для совместимости
-			"-o", outputTemplate,
-			url,
-		)
-	} else {
-
-		// (скачивает в обычном (тоже крутом) качестве)
-
-		cmd = exec.Command(
-			"yt-dlp",
-			"--newline",
-			"--js-runtimes", "node",
-			"-f", "ba",
-			"-x",
-			"--audio-format", "m4a",
-			"--audio-quality", "192K",
-			"--download-sections", downloadSections,
-			"--write-thumbnail",           // Скачать обложку в отдельный файл
-			"--embed-thumbnail",           // Вшить внутрь m4a
-			"--convert-thumbnails", "jpg", // Формат JPG для совместимости
-			"-o", outputTemplate,
-			url,
-		)
+		// запас в 1 децибел, при конвертации пики
+		// могут выходить на 0 db что приводит к хрипу/скрипу
+		"--postprocessor-args", "ExtractAudio:-af volume=-1.0dB",
 	}
+
+	// при конвертации .webm(opus) -> .m4a(aac) изза разницы
+	// в эффективности сжатия часть деталей теряется,
+	// решается это волшебным "--audio-quality", "0",
+	// ffmpeg сохраняет звук один в один (даже артефакты opus)
+	// раздуювая битрейт до ~400 Kbs
+
+	// если средний вес песни в 8-10мб не устраивает, битрейт можно залочить
+	// здесь это 192K (192 Kbs), что тоже вполне неплохо
+
+	if quality == "max" {
+		args = append(args, "--audio-quality", "0")
+	} else {
+		args = append(args, "--audio-quality", "192K")
+	}
+
+	if downloadSections != "" {
+		args = append(args, "--download-sections", downloadSections) // формат *12:34-12:34
+	}
+
+	// использовать куки если они есть
+	if _, err := os.Stat("cookies.txt"); err == nil {
+		args = append(args, "--cookies", "cookies.txt")
+	}
+
+	// финальная сборка
+	cmd = exec.Command("yt-dlp", args...)
 
 	pipeReader, pipeWriter := io.Pipe()
 
@@ -89,7 +83,7 @@ func YtdlpDownload(outputTemplate, url, quality, downloadSections string) ([]str
 	cmd.Stdout = pipeWriter
 	cmd.Stderr = pipeWriter
 
-	// запускаем cmd
+	// вызов yt-dlp
 	if err := cmd.Start(); err != nil {
 		_ = pipeWriter.Close()
 		return nil, err
@@ -110,19 +104,49 @@ func YtdlpDownload(outputTemplate, url, quality, downloadSections string) ([]str
 
 		downloadLog = append(downloadLog, line)
 
-		// обрабатываем только строки с выводом прогресса и выводим в консоль
-		if strings.Contains(line, "[download]") && strings.Contains(line, "%") {
-			fmt.Print(Yellow + "\ryt-dlp: " + Reset + line + "          ")
-		}
+		log.Println(Yellow + "yt-dlp: " + Reset + line)
 	}
-
-	fmt.Print("\n")
 
 	// Если yt-dlp завершился с ошибкой, CloseWithError передаст её в scanner.Err()
 	if err := scanner.Err(); err != nil {
-		log.Printf("Ошибка при скачивании: %v", err)
 		return downloadLog, err
 	}
 
 	return downloadLog, nil
+}
+
+func ParseYtDlpError(downloadLog []string) string {
+	var rawErr string
+
+	// Ищем строку, где yt-dlp пишет конкретную ошибку
+	for _, line := range downloadLog {
+		if strings.Contains(line, "ERROR:") {
+			rawErr = line
+			break
+		}
+	}
+
+	// Если в логе не нашли явного ERROR:, берем последнюю непустую строку
+	if rawErr == "" && len(downloadLog) > 0 {
+		rawErr = downloadLog[len(downloadLog)-1]
+	}
+
+	// Парсим ошибки yt-dlp и превращаем в "объяснялку" для чата
+	switch {
+	case strings.Contains(rawErr, "Sign in to confirm your age"):
+		return "Видео с ограничением 18+"
+	case strings.Contains(rawErr, "Video unavailable"):
+		return "Видео недоступно"
+	case strings.Contains(rawErr, "Private video"):
+		return "Это приватное видео"
+	case strings.Contains(rawErr, "is a live stream"):
+		return "Нельзя скачивать незавершенные прямые трансляции"
+	case strings.Contains(rawErr, "Incomplete YouTube ID"):
+		return "Некорректная ссылка на видео"
+	default:
+		if rawErr != "" {
+			return fmt.Sprintf("Ошибка yt-dlp: %s", rawErr)
+		}
+		return "Произошла неизвестная ошибка при скачивании"
+	}
 }

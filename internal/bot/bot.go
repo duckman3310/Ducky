@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"tgbot/internal/downloader"
 	"time"
@@ -13,8 +14,9 @@ import (
 )
 
 const (
-	Log = Green + "[LOG]  " + Reset
-	Err = Red + "[ERR]  " + Reset
+	Log = Green + "[LOG] " + Reset
+	Err = Red + "[ERR] " + Reset
+	Wrn = Yellow + "[WRN] " + Reset
 )
 
 func BotInit() {
@@ -97,139 +99,157 @@ func BotInit() {
 	}
 }
 
-// downloadAndSend вызывает yt-dlp с сохранением лога
-// для скачивания по ссылке и отправляет файл в чат
 func downloadAndSend(bot *tgbotapi.BotAPI, chatID int64, userMsgID int, url string, showlog bool, quality string, downloadSections string) {
 
-	// ставим таймер
+	// таймер
 	startTime := time.Now()
 
-	log.Printf(Log+"получена ссылка: %s", url)
+	// ID текущего скачивания для имени файла
+	reqID := strconv.FormatInt(time.Now().UnixNano(), 36)
 
-	// удаляем сообщение с ссылкой от пользователя
+	// добавляем reqID к логам
+	var (
+		Log = reqID + Green + " [LOG]   " + Reset
+		Err = reqID + Red + " [ERROR] " + Reset
+		Wrn = reqID + Yellow + " [WARN]  " + Reset
+	)
+
+	// ожидаемое имя файлов
+	outputTemplate := fmt.Sprintf("track_%d_%s_%%(title)s.%%(ext)s", chatID, reqID)
+
+	log.Printf("%sполучена ссылка: %s", Log, url)
+
+	// удаляем сообщение со ссылкой от пользователя
 	if _, err := bot.Request(tgbotapi.NewDeleteMessage(chatID, userMsgID)); err != nil {
-		log.Printf(Err+"Не удалось отправить запрос на удаление отправленой пользователем ссылки: %v", err)
+		log.Printf("%sНе удалось отправить запрос на удаление отправленной пользователем ссылки: %v", Err, err)
 	}
 
-	// создаем и отправляем statusMsg
+	// отправляем statusMsg
 	statusMsg, err := bot.Send(tgbotapi.NewMessage(chatID, "Скачивается.."))
 	if err != nil {
-		log.Printf(Err+"Не удалось отправить statusMsg: %s", err)
+		log.Printf("%sНе удалось отправить statusMsg: %v", Err, err)
 	}
 
-	// Уникальный ID текущего скачивания для имени файла
-	// чтобы параллельные потоки их не путали
-	reqID := time.Now().UnixNano()
+	defer func() {
+		log.Print(Log + "Удаление файлов")
 
-	// формируем ожидаемое имя файла
-	outputTemplate := fmt.Sprintf("track_%d_%d_%%(title)s.%%(ext)s", chatID, reqID) // %%(title)s.%%(ext)s - сюда yt-dlp подставит имя и разширение
+		files, err := filepath.Glob(fmt.Sprintf("track_%d_%s_*", chatID, reqID))
+		if err != nil {
+			log.Printf("%sНе удалось получить список файлов для удаления: %v", Err, err)
+		}
 
-	log.Printf(Log + "Вызов yt-dlp: ")
+		for _, file := range files {
+			if err = os.Remove(file); err != nil {
+				log.Printf("%sНе удалось удалить файл %s: %v", Err, file, err)
+			}
+		}
+
+		// Удаляем временный статус
+		if _, err = bot.Request(tgbotapi.NewDeleteMessage(chatID, statusMsg.MessageID)); err != nil {
+			log.Printf("%sНе удалось отправить запрос на удаление statusMsg: %v", Err, err)
+		}
+
+		// итоговое время
+		endTime := time.Since(startTime).Seconds()
+		log.Printf("%sЗавершено, %.1fc", Log, endTime)
+	}()
+
+	// ------------------- Вызов yt-dlp -------------------
+
+	log.Print(Log + "Вызов yt-dlp")
 	downloadlog, err := downloader.YtdlpDownload(outputTemplate, url, quality, downloadSections)
 
-	if err == nil {
-
-		// ищем скачанный файл
-		audioFiles, err := filepath.Glob(fmt.Sprintf("track_%d_%d_*.m4a", chatID, reqID))
-		if err != nil || len(audioFiles) == 0 {
-			log.Printf(Err + "Не удалось найти скачанный файл")
-			if _, err = bot.Send(tgbotapi.NewEditMessageText(chatID, statusMsg.MessageID, "Не удалось найти скачанный файл")); err != nil {
-				log.Printf(Err+"Не удалось отправить уведомление о потеряном файле: %v", err)
-			}
-			return
+	// отправка лога
+	if showlog {
+		msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("заняло %.1fc,\nкачество: %s\nreqID: %s\n```\n%s\n```", time.Since(startTime).Seconds(), quality, reqID, strings.Join(downloadlog, "\n")))
+		msg.ParseMode = tgbotapi.ModeMarkdown
+		if _, err = bot.Send(msg); err != nil {
+			log.Printf("%sНе удалось отправить лог скачивания: %v", Err, err)
 		}
+	}
 
-		filePath := audioFiles[0]
-
-		// удаляем файл с сервера при завершении функции
-		defer func() {
-			if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
-				log.Printf(Err+"Не удалось удалить файл с сервера: %v", err)
-			}
-		}()
-
-		actualExt := filepath.Ext(filePath)
-
-		var fileSizeMB float64
-		if fileInfo, err := os.Stat(filePath); err == nil {
-			fileSizeMB = float64(fileInfo.Size()) / 1024 / 1024
-		}
-
-		// Собираем имя файла для телеграмма
-		cleanName := filepath.Base(filePath)
-		cleanName = strings.TrimPrefix(cleanName, fmt.Sprintf("track_%d_%d_", chatID, reqID))
-		cleanName = strings.TrimSuffix(cleanName, actualExt)
-
-		log.Printf(Log+"Скачан файл: '%s%s %.2f' MB", cleanName, actualExt, fileSizeMB)
-
-		// Меняем статус в Телеграме
-		if _, err = bot.Send(tgbotapi.NewEditMessageText(chatID, statusMsg.MessageID, fmt.Sprintf("%s Отправляется..", cleanName))); err != nil {
-			log.Printf(Err+"Не удалось отправить уведомление о скачанном файле: %v", err)
-		}
-
-		// ищем обложку по имени скаченого файла
-		var thumbPath string
-		possibleThumb := strings.TrimSuffix(filePath, actualExt) + ".jpg"
-		if _, err := os.Stat(possibleThumb); err == nil {
-			thumbPath = possibleThumb
-			defer func(p string) {
-				_ = os.Remove(p)
-			}(thumbPath)
-		}
-
-		// Создаем объект аудио
-		audioFile := tgbotapi.NewAudio(chatID, tgbotapi.FilePath(filePath))
-		audioFile.Title = cleanName
-		audioFile.Performer = ""
-
-		// Прикрепляем обложку
-		if thumbPath != "" {
-			audioFile.Thumb = tgbotapi.FilePath(thumbPath)
-		}
-
-		// Отправляем файл
-		if _, err := bot.Send(audioFile); err != nil {
-			log.Printf(Err+"Телеграм отклонил отправку файла: %v", err)
-			if _, err = bot.Send(tgbotapi.NewEditMessageText(chatID, statusMsg.MessageID, "Телеграм отклонил отправку файла")); err != nil {
-				log.Printf(Err+"Не удалось отправить уведомление об отклонении отправки файла: %v", err)
-			}
-			return
-		}
-
-		log.Printf(Log + "Файл отправлен")
-
-	} else {
-
+	// если yt-dlp накрылся
+	if err != nil {
 		errReason := downloader.ParseYtDlpError(downloadlog)
 
-		log.Printf(Err+"Не удалось скачать файл, %s", errReason)
+		log.Printf("%sНе удалось скачать: %s", Err, errReason)
 
 		msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("Не удалось скачать, %s\n```Скопировать\n%s```", errReason, url))
 		msg.ParseMode = tgbotapi.ModeMarkdown
 
 		if _, err = bot.Send(msg); err != nil {
-			log.Printf(Err+"Не удалось отправить уведомление об ошибке скачивания: %v", err)
+			log.Printf("%sНе удалось отправить уведомление об ошибке скачивания: %v", Err, err)
+		}
+		return
+	}
+
+	// ------------------- Работа со скачанными файлами -------------------
+
+	// получаем список скачанных файлов
+	downloadFiles, err := filepath.Glob(fmt.Sprintf("track_%d_%s_*", chatID, reqID))
+	if err != nil {
+		log.Printf("%sНе удалось получить список скачанных файлов: %v", Err, err)
+	}
+
+	var audioPath string
+	var previewPath string
+
+	// получаем имена .m4a и .jpg файлов
+	for _, file := range downloadFiles {
+		if strings.HasSuffix(file, ".m4a") {
+			audioPath = file
+		} else if strings.HasSuffix(file, ".jpg") {
+			previewPath = file
 		}
 	}
 
-	// Удаляем временный статус
-	if _, err = bot.Request(tgbotapi.NewDeleteMessage(chatID, statusMsg.MessageID)); err != nil {
-		log.Printf(Err+"Не удалось отправить запрос на удаление statusMsg: %v", err)
-	}
-
-	// итоговое время
-	endTime := time.Since(startTime).Seconds()
-
-	// отправка лога скачивания
-	if showlog == true {
-
-		msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("заняло %.1fc,\nкачество: %s\n```\n%s\n```", endTime, quality, strings.Join(downloadlog, "\n")))
-		msg.ParseMode = tgbotapi.ModeMarkdown
-
-		if _, err = bot.Send(msg); err != nil {
-			log.Printf(Err+"Не удалось отправить лог скачивания: %v", err)
+	// если файлы затерялись
+	if previewPath == "" {
+		log.Print(Wrn + "Превью файл не найден")
+		if audioPath == "" {
+			log.Print(Err + "Аудио файл не найден")
+			if _, err = bot.Send(tgbotapi.NewEditMessageText(chatID, statusMsg.MessageID, "аудио файл утерян")); err != nil {
+				log.Printf("%sНе удалось отправить уведомление об утерянном аудио файле: %v", Err, err)
+			}
+			return
 		}
 	}
 
-	log.Printf(Log+"Завершено, %.1fc", endTime)
+	// расширение
+	actualExt := filepath.Ext(audioPath)
+
+	// размер
+	var fileSizeMB float64
+	if fileInfo, err := os.Stat(audioPath); err == nil {
+		fileSizeMB = float64(fileInfo.Size()) / 1024 / 1024
+	}
+
+	// Собираем имя файла для Телеграма
+	cleanName := filepath.Base(audioPath)
+	cleanName = strings.TrimPrefix(cleanName, fmt.Sprintf("track_%d_%s_", chatID, reqID))
+	cleanName = strings.TrimSuffix(cleanName, actualExt)
+
+	log.Printf("%sСкачан файл: '%s%s' (%.2f MB)", Log, cleanName, actualExt, fileSizeMB)
+
+	// Меняем статус в Телеграме
+	if _, err = bot.Send(tgbotapi.NewEditMessageText(chatID, statusMsg.MessageID, fmt.Sprintf("%s Отправляется..", cleanName))); err != nil {
+		log.Printf("%sНе удалось отправить уведомление о скачанном файле: %v", Err, err)
+	}
+
+	// Создаем объект аудио
+	audioFile := tgbotapi.NewAudio(chatID, tgbotapi.FilePath(audioPath))
+	audioFile.Title = cleanName
+	audioFile.Performer = ""
+	audioFile.Thumb = tgbotapi.FilePath(previewPath)
+
+	// Отправляем файл
+	if _, err := bot.Send(audioFile); err != nil {
+		log.Printf("%sТелеграм отклонил отправку файла: %v", Err, err)
+		if _, err = bot.Send(tgbotapi.NewEditMessageText(chatID, statusMsg.MessageID, "Телеграм отклонил отправку файла")); err != nil {
+			log.Printf("%sНе удалось отправить уведомление об отклонении отправки файла: %v", Err, err)
+		}
+		return
+	}
+
+	log.Print(Log + "Файл отправлен")
 }

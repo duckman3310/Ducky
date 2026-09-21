@@ -33,7 +33,7 @@ func YtdlpDownload(outputTemplate, url, quality, downloadSections string) ([]str
 	// аргументы вызова
 	args := []string{
 		"--newline",
-		"--js-runtimes", "node",
+		"--js-runtimes", "node:/usr/bin/nodejs",
 		"-f", "ba",
 		"-x",
 		"--audio-format", "m4a",
@@ -41,7 +41,7 @@ func YtdlpDownload(outputTemplate, url, quality, downloadSections string) ([]str
 		url,
 
 		// обложка
-		"--write-thumbnail",           // Скачать обложку в отдельный файл (я уже и забыл зачем)
+		"--write-thumbnail",           // Скачать обложку в отдельный файл (потом дополнительно ложится в обьект файла в чате)
 		"--embed-thumbnail",           // Вшить внутрь m4a
 		"--convert-thumbnails", "jpg", // Формат JPG для совместимости
 

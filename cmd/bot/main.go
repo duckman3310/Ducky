@@ -1,7 +1,8 @@
 package main
 
-import "tgbot/internal/bot"
+import "ducky/internal/bot"
 
 func main() {
-	bot.BotInit()
+	Bot := bot.New()
+	Bot.Run()
 }

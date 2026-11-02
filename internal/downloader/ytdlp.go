@@ -2,10 +2,9 @@ package downloader
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
-	"log"
-	"os"
 	"os/exec"
 	"strings"
 )
@@ -23,130 +22,73 @@ const (
 )
 
 // скачивает аудио дорожку в формате m4a из видео на ютуб по ссылке
-func YtdlpDownload(outputTemplate, url, quality, downloadSections string) ([]string, error) {
-
-	// создаем пустой лог
-	downloadLog := []string{}
-
-	var cmd *exec.Cmd
-
-	// аргументы вызова
+func Download(input, outputTemplate string) error {
 	args := []string{
 		"--newline",
 		"--js-runtimes", "node:/usr/bin/nodejs",
 		"-f", "ba",
 		"-x",
 		"--audio-format", "m4a",
+		"--audio-quality", "192K",
 		"-o", outputTemplate,
-		url,
-
-		// обложка
-		"--write-thumbnail",           // Скачать обложку в отдельный файл (потом дополнительно ложится в обьект файла в чате)
-		"--embed-thumbnail",           // Вшить внутрь m4a
-		"--convert-thumbnails", "jpg", // Формат JPG для совместимости
-
-		// запас в 1 децибел, при конвертации пики
-		// могут выходить на 0 db что приводит к хрипу/скрипу
+		"--write-thumbnail",
+		"--embed-thumbnail",
+		"--convert-thumbnails", "jpg",
 		"--postprocessor-args", "ExtractAudio:-af volume=-1.0dB",
 	}
 
-	// при конвертации .webm(opus) -> .m4a(aac) изза разницы
-	// в эффективности сжатия часть деталей теряется,
-	// решается это волшебным "--audio-quality", "0",
-	// ffmpeg сохраняет звук один в один (даже артефакты opus)
-	// раздуювая битрейт до ~400 Kbs
+	// парсинг входных аргументов
+	var links []string
+	for _, arg := range strings.Fields(input) {
 
-	// если средний вес песни в 8-10мб не устраивает, битрейт можно залочить
-	// здесь это 192K (192 Kbs), что тоже вполне неплохо
+		if arg == "" {
+			continue
+		}
 
-	if quality == "max" {
-		args = append(args, "--audio-quality", "0")
-	} else {
-		args = append(args, "--audio-quality", "192K")
+		switch {
+		case strings.HasPrefix(arg, "http://"), strings.HasPrefix(arg, "https://"):
+			links = append(links, arg)
+
+		case strings.HasPrefix(arg, "*"):
+			args = append(args, "--download-sections", arg)
+		}
 	}
 
-	if downloadSections != "" {
-		args = append(args, "--download-sections", downloadSections) // формат *12:34-12:34
+	if len(links) == 0 {
+		return errors.New("отсутствует ссылка")
 	}
 
-	// использовать куки если они есть
-	if _, err := os.Stat("cookies.txt"); err == nil {
-		args = append(args, "--cookies", "cookies.txt")
-	}
-
-	// финальная сборка
-	cmd = exec.Command("yt-dlp", args...)
+	// сборка вызова
+	args = append(args, links...)
+	cmd := exec.Command("yt-dlp", args...)
 
 	pipeReader, pipeWriter := io.Pipe()
-
-	// подключаем врайтер к выходам запускаемой проги
-	cmd.Stdout = pipeWriter
 	cmd.Stderr = pipeWriter
+	// 	cmd.Stdout = pipeWriter
 
-	// вызов yt-dlp
+	// вызов
 	if err := cmd.Start(); err != nil {
 		_ = pipeWriter.Close()
-		return nil, err
+		return fmt.Errorf("запуск yt-dlp: %w", err)
 	}
 
-	// дожидаемся закрытия программы в отдельной горутине
 	go func() {
-		err := cmd.Wait()
-		_ = pipeWriter.CloseWithError(err)
+		_ = pipeWriter.CloseWithError(cmd.Wait())
 	}()
 
-	// Создаем буфер для вывода yt-dlp из трубы, сканер проще говоря
+	// запись ошибок
 	scanner := bufio.NewScanner(pipeReader)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
-	// сканируем все что выдает yt-dlp
+	stderrLines := []string{}
+
 	for scanner.Scan() {
-		line := scanner.Text()
-
-		downloadLog = append(downloadLog, line)
-
-		log.Println(Yellow + "yt-dlp: " + Reset + line)
+		stderrLines = append(stderrLines, scanner.Text())
 	}
 
-	// Если yt-dlp завершился с ошибкой, CloseWithError передаст её в scanner.Err()
 	if err := scanner.Err(); err != nil {
-		return downloadLog, err
+		return fmt.Errorf("yt-dlp: %w (stderr: %s)", err, strings.Join(stderrLines, "\n"))
 	}
 
-	return downloadLog, nil
-}
-
-func ParseYtDlpError(downloadLog []string) string {
-	var rawErr string
-
-	// Ищем строку, где yt-dlp пишет конкретную ошибку
-	for _, line := range downloadLog {
-		if strings.Contains(line, "ERROR:") {
-			rawErr = line
-			break
-		}
-	}
-
-	// Если в логе не нашли явного ERROR:, берем последнюю непустую строку
-	if rawErr == "" && len(downloadLog) > 0 {
-		rawErr = downloadLog[len(downloadLog)-1]
-	}
-
-	// Парсим ошибки yt-dlp и превращаем в "объяснялку" для чата
-	switch {
-	case strings.Contains(rawErr, "Sign in to confirm your age"):
-		return "Видео с ограничением 18+"
-	case strings.Contains(rawErr, "Video unavailable"):
-		return "Видео недоступно"
-	case strings.Contains(rawErr, "Private video"):
-		return "Это приватное видео"
-	case strings.Contains(rawErr, "is a live stream"):
-		return "Нельзя скачивать незавершенные прямые трансляции"
-	case strings.Contains(rawErr, "Incomplete YouTube ID"):
-		return "Некорректная ссылка на видео"
-	default:
-		if rawErr != "" {
-			return fmt.Sprintf("Ошибка yt-dlp: %s", rawErr)
-		}
-		return "Произошла неизвестная ошибка при скачивании"
-	}
+	return nil
 }

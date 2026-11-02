@@ -1,4 +1,4 @@
-module tgbot
+module ducky
 
 go 1.25.3
 

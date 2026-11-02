@@ -21,3 +21,4 @@ cookies.txt
 bottoken.go
 config.toml
 /build
+/internal/parser

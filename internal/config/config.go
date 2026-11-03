@@ -23,7 +23,7 @@ func Load(path string) (*Config, error) {
 	if errors.Is(err, os.ErrNotExist) {
 		defaultCfg := `
 			# Токен бота от @BotFather
-			token = "Your bot token"
+			bot_token = ""
 
 			# Текст ответа для /info
 			info_text = ""

@@ -2,6 +2,7 @@ package bot
 
 import (
 	"ducky/internal/config"
+	"os"
 	"runtime/debug"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -33,38 +34,47 @@ func New() *Bot {
 	cfg, err := config.Load("config.toml")
 	if err != nil {
 		logErr("Не удалось загрузить конфиг бота", err)
+		os.Exit(1)
 	}
 
 	api, err := tgbotapi.NewBotAPI(cfg.Token)
 	if err != nil {
 		logErr("Не удалось инициализировать бота", err)
+		os.Exit(1)
 	}
 
 	return &Bot{
 		Cfg: cfg,
 		API: api,
 		Commands: []tgbotapi.BotCommand{
-			{
-				Command:     "info",
-				Description: "Информация о боте",
-			}},
+			{Command: "info", Description: "Информация о боте"},
+			{Command: "logs", Description: "Логи текущего чата"},
+			{Command: "help", Description: "Как скачать аудио с видео?"},
+		},
 	}
 }
 
 func GetVersion() string {
 
-	var version string
+	version := "unknown"
 
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
-		logWarn("Не удалось получить версию бота")
-		return "unknown"
+		logWarn("Не удалось получить информацию о сборке", 0)
+		return version
 	}
 
 	for _, setting := range info.Settings {
 		switch setting.Key {
 		case "vcs.revision":
-			version = setting.Value // хеш коммита
+			if setting.Value != "" {
+
+				version = setting.Value // хеш коммита
+
+				if len(version) > 7 {
+					version = version[:7] // укоротим до 7 символов
+				}
+			}
 
 		case "vcs.modified":
 			if setting.Value == "true" {

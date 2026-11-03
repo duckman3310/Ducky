@@ -16,9 +16,10 @@ bin/
 .idea/
 .DS_Store
 
-tg-audio-bot
+ducky
 cookies.txt
 bottoken.go
 config.toml
 /build
 /internal/parser
+bot

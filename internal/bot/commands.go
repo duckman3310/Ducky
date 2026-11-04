@@ -22,13 +22,19 @@ func (bot *Bot) replyCommand(command string, chatID int64) {
 			}
 		}
 	case "/logs":
+
 		logs := tgbotapi.NewMessage(chatID, strings.Join(UserLogs.Read(chatID), "\n"))
+		logs.DisableWebPagePreview = true
+
 		if _, err := bot.API.Send(logs); err != nil {
 			logErr("Не удалось отправить ответ на команду /logs", err, chatID)
 		}
+
 	case "/help":
+
 		helpMsg := tgbotapi.NewMessage(chatID, "Принимается: \nСыллка (Youtube, VK, TikTok, Instagram и т.д.)\nТаймкoд от и до (*ЧЧ:ММ:СС, 0 - сначала, inf - до конца)\n\n Пример: https://youtu.be/dQw4w9WgXcQ?si=lzgVyvPadCL0DKz7 *00:35-1:20")
 		helpMsg.DisableWebPagePreview = true
+
 		if _, err := bot.API.Send(helpMsg); err != nil {
 			logErr("Не удалось отправить ответ на команду /help", err, chatID)
 		}

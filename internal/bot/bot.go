@@ -39,7 +39,7 @@ func New() *Bot {
 
 	api, err := tgbotapi.NewBotAPI(cfg.Token)
 	if err != nil {
-		logErr("Не удалось инициализировать бота", err)
+		logErr("Не удалось инициализировать api бота", err)
 		os.Exit(1)
 	}
 

@@ -44,13 +44,9 @@ func New() *Bot {
 	}
 
 	return &Bot{
-		Cfg: cfg,
-		API: api,
-		Commands: []tgbotapi.BotCommand{
-			{Command: "info", Description: "Информация о боте"},
-			{Command: "logs", Description: "Логи текущего чата"},
-			{Command: "help", Description: "Как скачать аудио с видео?"},
-		},
+		Cfg:      cfg,
+		API:      api,
+		Commands: Commands,
 	}
 }
 
